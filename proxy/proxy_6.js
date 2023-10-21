@@ -11,9 +11,13 @@ const TriggerType = {
   ADD: 'ADD',
   DELETE: 'DELETE',
 };
+// 是否允许响应式追踪
+let shouldTrack = true;
+const reactiveMap = new Map();
 const bucket = new WeakMap();
 function track(target, key) {
-  if (!activeEffect) return;
+  // 禁止追踪时 直接返回
+  if (!activeEffect || !shouldTrack) return;
   let depsMap = bucket.get(target);
   if (!depsMap) bucket.set(target, (depsMap = new Map()));
   let deps = depsMap.get(key);
@@ -104,11 +108,40 @@ function effect(fn, options = {}) {
   }
   return effectFn;
 }
+const originMethod = Array.prototype.includes;
+const arrayInstrumentations = {};
+['includes', 'indexOf', 'lastIndexOf'].forEach((method) => {
+  const originMethod = Array.prototype[method];
+  arrayInstrumentations[method] = function (...args) {
+    let res = originMethod.apply(this, args);
+    if (res === false || res === -1) {
+      res = originMethod.apply(this.raw, args);
+    }
+    return res;
+  };
+});
+// 重写'pop', 'push', 'shift', 'unshift', 'splice'方法，由于其内部方法会读取length属性，这会间接导致一些更新问题，且其语义上是设置属性，故在push执行时不进行追踪
+['pop', 'push', 'shift', 'unshift', 'splice'].forEach((method) => {
+  const originMethod = Array.prototype[method];
+  arrayInstrumentations[method] = function (...args) {
+    // 禁止追踪
+    shouldTrack = false;
+    let res = originMethod.apply(this, args);
+    // 允许追踪
+    shouldTrack = true;
+    return res;
+  };
+});
 function createReactive(obj, isShallow = false, isReadonly = false) {
   return new Proxy(obj, {
     get(target, key, receiver) {
       // 可通过raw访问原始数据
       if (key === 'raw') return target;
+
+      // 如果target是数组，则返回重写方法
+      if (Array.isArray(target) && arrayInstrumentations.hasOwnProperty(key)) {
+        return Reflect.get(arrayInstrumentations, key, receiver);
+      }
       // 不对key为symbol的属性进行追踪
       if (!isReadonly && typeof key !== 'symbol') track(target, key);
 
@@ -181,12 +214,18 @@ function shallowReadonly(obj) {
   return createReactive(obj, true, true);
 }
 function reactive(obj) {
-  return createReactive(obj, false);
+  // 防止多次为obj创建不同的响应式对象
+  const existProxy = reactiveMap.get(obj);
+  if (existProxy) return existProxy;
+
+  const proxy = createReactive(obj, false);
+  reactiveMap.set(obj, proxy);
+  return proxy;
 }
 function shallowReactive(obj) {
   return createReactive(obj, true);
 }
-const arr = reactive([1, 2, 3]);
+// const arr = reactive([1, 2, 3]);
 
 // effect(() => {
 //   console.log('运行副作用函数1', arr.length);
@@ -206,9 +245,29 @@ const arr = reactive([1, 2, 3]);
 
 // arr.length = 3;
 
+// effect(() => {
+//   for (const item of arr) {
+//     console.log(item);
+//   }
+// });
+// arr.length = 5;
+
+// const obj = {};
+// const arr = reactive([obj]);
+// // 1. 访问arr[0]时会创建一个响应式对象
+// // 2. includes内部也会通过索引访问到arr[0]此时又会创建一个obj的代理对象
+// console.log(arr.includes(arr[0]));
+// console.log(arr.includes(obj));
+// console.log(arr.indexOf(obj));
+// console.log(arr.lastIndexOf(obj));
+
+const arr1 = reactive([]);
+
 effect(() => {
-  for (const item of arr) {
-    console.log(item);
-  }
+  console.log('执行');
+  arr1.push(111);
 });
-arr.length = 5;
+effect(() => {
+  console.log('执行');
+  arr1.push(222);
+});
