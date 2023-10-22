@@ -1,10 +1,12 @@
 /** @format */
 
-// 代理数组
+// 代理Set Map
 /** @format */
 
 let activeEffect;
 const ITERATE_KEY = Symbol();
+const MAP_KEYS_ITERATE_KEY = Symbol();
+const RAW = Symbol(); //防止用户属性冲突
 const effectStack = [];
 const TriggerType = {
   SET: 'SET',
@@ -62,9 +64,28 @@ function trigger(target, key, type, newValue) {
   }
 
   // 只有新增属性时才会触发ITERATE_KEY相关联函数执行
-  if (type === TriggerType.ADD || type === TriggerType.DELETE) {
+  if (
+    type === TriggerType.ADD ||
+    type === TriggerType.DELETE ||
+    (type === TriggerType.SET &&
+      Object.prototype.toString.call(target) === '[object Map]')
+  ) {
     // 取得与ITERATE_KEY相关联的函数
     const iterateEffects = depsMap.get(ITERATE_KEY);
+    iterateEffects &&
+      iterateEffects.forEach((effect) => {
+        if (effect !== activeEffect) {
+          effectsToRun.add(effect);
+        }
+      });
+  }
+  // 只有新增属性时才会触发ITERATE_KEY相关联函数执行
+  if (
+    (type === TriggerType.ADD || type === TriggerType.DELETE) &&
+    Object.prototype.toString.call(target) === '[object Map]'
+  ) {
+    // 取得与ITERATE_KEY相关联的函数
+    const iterateEffects = depsMap.get(MAP_KEYS_ITERATE_KEY);
     iterateEffects &&
       iterateEffects.forEach((effect) => {
         if (effect !== activeEffect) {
@@ -108,50 +129,134 @@ function effect(fn, options = {}) {
   }
   return effectFn;
 }
-const originMethod = Array.prototype.includes;
-const arrayInstrumentations = {};
-['includes', 'indexOf', 'lastIndexOf'].forEach((method) => {
-  const originMethod = Array.prototype[method];
-  arrayInstrumentations[method] = function (...args) {
-    let res = originMethod.apply(this, args);
-    if (res === false || res === -1) {
-      res = originMethod.apply(this.raw, args);
+function iteratorMethod() {
+  const wrap = (val) => (typeof val === 'object' ? reactive(val) : val);
+  const target = this[RAW];
+  const itr = target[Symbol.iterator]();
+  track(target, ITERATE_KEY);
+  return {
+    // 迭代器协议
+    next() {
+      const { value, done } = itr.next();
+      return {
+        value: value ? [wrap(value[0]), [wrap(value[1])]] : value,
+        done,
+      };
+    },
+    // 可迭代协议
+    [Symbol.iterator]() {
+      return this;
+    },
+  };
+}
+function valuesIteratorMethod() {
+  const wrap = (val) => (typeof val === 'object' ? reactive(val) : val);
+  const target = this[RAW];
+  const itr = target.values();
+  track(target, ITERATE_KEY);
+  return {
+    // 迭代器协议
+    next() {
+      const { value, done } = itr.next();
+      return {
+        // value是值 而非键值对，所以只需包裹value即可
+        value: wrap(value),
+        done,
+      };
+    },
+    // 可迭代协议
+    [Symbol.iterator]() {
+      return this;
+    },
+  };
+}
+function keysIteratorMethod() {
+  const wrap = (val) => (typeof val === 'object' ? reactive(val) : val);
+  const target = this[RAW];
+  const itr = target.keys();
+  track(target, MAP_KEYS_ITERATE_KEY);
+  return {
+    // 迭代器协议
+    next() {
+      const { value, done } = itr.next();
+      return {
+        // value是值 而非键值对，所以只需包裹value即可
+        value: wrap(value),
+        done,
+      };
+    },
+    // 可迭代协议
+    [Symbol.iterator]() {
+      return this;
+    },
+  };
+}
+const mutableInstrumentations = {
+  [Symbol.iterator]: iteratorMethod,
+  entires: iteratorMethod,
+  values: valuesIteratorMethod,
+  keys: keysIteratorMethod,
+  add(key) {
+    const target = this[RAW];
+    const hadKey = target.has(key);
+    const res = target.add(key);
+    if (!hadKey) {
+      trigger(target, key, TriggerType.ADD);
     }
     return res;
-  };
-});
-// 重写'pop', 'push', 'shift', 'unshift', 'splice'方法，由于其内部方法会读取length属性，这会间接导致一些更新问题，且其语义上是设置属性，故在push执行时不进行追踪
-['pop', 'push', 'shift', 'unshift', 'splice'].forEach((method) => {
-  const originMethod = Array.prototype[method];
-  arrayInstrumentations[method] = function (...args) {
-    // 禁止追踪
-    shouldTrack = false;
-    let res = originMethod.apply(this, args);
-    // 允许追踪
-    shouldTrack = true;
+  },
+  delete(key) {
+    const target = this[RAW];
+    const hadKey = target.has(key);
+    const res = target.delete(key);
+    if (hadKey) {
+      trigger(target, key, TriggerType.DELETE);
+    }
     return res;
-  };
-});
+  },
+  get(key) {
+    const target = this[RAW];
+    const hadKey = target.has(key);
+    track(target, key);
+    if (hadKey) {
+      const res = target.get(key);
+      return typeof res === 'object' ? reactive(res) : res;
+    }
+  },
+  set(key, value) {
+    const target = this[RAW];
+    const had = target.has(key);
+    const oldValue = target.get(key);
+    // 将原始数据复制到target，避免数据污染
+    const rawValue = value[RAW] || value;
+    target.set(key, rawValue);
+    if (!had) {
+      trigger(target, key, TriggerType.ADD);
+    } else if (
+      oldValue !== value &&
+      (oldValue === oldValue || value === value)
+    ) {
+      trigger(target, key, TriggerType.SET);
+    }
+  },
+  forEach(callback) {
+    const wrap = (val) => (typeof val === 'object' ? reactive(val) : val);
+    const target = this[RAW];
+    track(target, ITERATE_KEY);
+    target.forEach((v, k) => {
+      callback(wrap(v), wrap(k), this);
+    });
+  },
+};
 function createReactive(obj, isShallow = false, isReadonly = false) {
   return new Proxy(obj, {
     get(target, key, receiver) {
-      // 可通过raw访问原始数据
-      if (key === 'raw') return target;
-
-      // 如果target是数组，则返回重写方法
-      if (Array.isArray(target) && arrayInstrumentations.hasOwnProperty(key)) {
-        return Reflect.get(arrayInstrumentations, key, receiver);
+      if (key === RAW) return target;
+      if (key === 'size') {
+        track(target, ITERATE_KEY);
+        return Reflect.get(target, key, target);
       }
-      // 不对key为symbol的属性进行追踪
-      if (!isReadonly && typeof key !== 'symbol') track(target, key);
-
-      const res = Reflect.get(target, key, receiver);
-      if (isShallow) return res;
-      if (typeof res === 'object' && res !== null) {
-        return isReadonly ? readonly(res) : reactive(res);
-      }
-      // 这里的receiver 相当于this,将target的this绑定在了代理的对象obj上,这样在原始对象中访问的this就是代理对象,就能够进行依赖收集
-      return res;
+      return mutableInstrumentations[key];
     },
     set(target, key, newValue, receiver) {
       if (isReadonly) {
@@ -170,7 +275,7 @@ function createReactive(obj, isShallow = false, isReadonly = false) {
       // 防止当代理对象的原型为响应式对象时重复触发set的行为
       // 原理：访问代理对象时receiver恒为原始对象的代理对象而不是原型的代理对象
       // 如果target === receiver.raw说明receiver是target的代理对象，
-      if (target === receiver.raw) {
+      if (target === receiver[RAW]) {
         // 增加判断NaN的条件
         if (
           oldValue !== newValue &&
@@ -207,12 +312,6 @@ function createReactive(obj, isShallow = false, isReadonly = false) {
     },
   });
 }
-function readonly(obj) {
-  return createReactive(obj, false, true);
-}
-function shallowReadonly(obj) {
-  return createReactive(obj, true, true);
-}
 function reactive(obj) {
   // 防止多次为obj创建不同的响应式对象
   const existProxy = reactiveMap.get(obj);
@@ -222,68 +321,52 @@ function reactive(obj) {
   reactiveMap.set(obj, proxy);
   return proxy;
 }
-function shallowReactive(obj) {
-  return createReactive(obj, true);
-}
-// const arr = reactive([1, 2, 3]);
+
+// const set = new Set([1, 2, 3]);
+// const proxySet = reactive(set);
 
 // effect(() => {
-//   console.log('运行副作用函数1', arr.length);
+//   console.log(proxySet.size);
 // });
-// // 当索引值大于arr长度时，此时需要触发跟length相关联的副作用函数
-// // arr[10] = 22;
+// proxySet.add(4);
+// proxySet.delete(4);
+
+// const map = new Map([
+//   ['foo', 1],
+//   ['bar', NaN],
+// ]);
+// const proxyMap = reactive(map);
 // effect(() => {
-//   console.log('运行副作用函数1', arr[0]);
+//   // console.log(proxyMap.size);
+//   console.log(proxyMap.get('bar'));
 // });
 
-// effect(() => {
-//   console.log('运行副作用函数2', arr[1]);
-// });
-// effect(() => {
-//   console.log('运行副作用函数3', arr[2]);
-// });
+// // proxyMap.set('foo1', 11);
+// proxyMap.set('bar', NaN);
 
-// arr.length = 3;
+// const map = new Map([
+//   ['foo', 1],
+//   ['bar', NaN],
+// ]);
+// const proxyMap = reactive(map);
 
 // effect(() => {
-//   for (const item of arr) {
-//     console.log(item);
+//   for (const [key, value] of proxyMap) {
+//     console.log(key, value);
 //   }
 // });
-// arr.length = 5;
+// proxyMap.set('key', 'value');
 
-// const obj = {};
-// const arr = reactive([obj]);
-// // 1. 访问arr[0]时会创建一个响应式对象
-// // 2. includes内部也会通过索引访问到arr[0]此时又会创建一个obj的代理对象
-// console.log(arr.includes(arr[0]));
-// console.log(arr.includes(obj));
-// console.log(arr.indexOf(obj));
-// console.log(arr.lastIndexOf(obj));
-
-// const arr1 = reactive([]);
+// const map = new Map([
+//   ['foo', 1],
+//   ['bar', NaN],
+// ]);
+// const proxyMap = reactive(map);
 
 // effect(() => {
-//   console.log('执行');
-//   arr1.push(111);
+//   for (const value of proxyMap.keys()) {
+//     console.log(value);
+//   }
 // });
-// effect(() => {
-//   console.log('执行');
-//   arr1.push(222);
-// });
-
-// const obj = {
-//   one: {
-//     two: {
-//       three: 1,
-//     },
-//   },
-// };
-// const p = shallowReactive(obj);
-
-
-// effect(() => {
-//   console.log(p.one.two);
-// })
-
-// p.one.two = 2
+// proxyMap.set('key', 'value');
+// proxyMap.set('foo', '11');
