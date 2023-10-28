@@ -1,6 +1,6 @@
 /** @format */
 
-// ref —— 原始值的响应式方案
+// 自动脱ref
 /** @format */
 
 let activeEffect;
@@ -270,6 +270,23 @@ function toRefs(obj, key) {
   return ret;
 }
 
+// 使用代理实现自动托ref
+function proxyRefs(target) {
+  return new Proxy(target, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver);
+      return value.__v_isRef ? value.value : value;
+    },
+    set(target, key, newValue, receiver) {
+      const value = target[key];
+      if (value.__v_isRef) {
+        value.value = newValue;
+        return true;
+      }
+      return Reflect.set(target, key, newValue, receiver);
+    },
+  });
+}
 const obj = reactive({
   foo: 1,
   bar: 2,
@@ -281,8 +298,8 @@ const obj = reactive({
 // });
 // obj.foo = 2;
 
-const newObj = toRefs(obj);
+const newObj = proxyRefs({ ...toRefs(obj) });
 effect(() => {
-  console.log(newObj.foo.value);
+  console.log(newObj.foo);
 });
-newObj.foo.value = 4;
+newObj.foo = 4;
