@@ -83,8 +83,7 @@ const { renderer } = createRenderer({
       if (key === 'form' && el.tagName === 'INPUT') return false;
       return key in el;
     }
-    // 在设置class的一系列方法里（setAttribute、className、classList）使用className性能最佳。
-    // 可以对class的设置进行特殊处理
+
     if (/^on/.test(key)) {
       let invokers = el._vei || (el._vei = {});
       const name = key.slice(2).toLowerCase();
@@ -92,6 +91,8 @@ const { renderer } = createRenderer({
       if (nextValue) {
         if (!invoker) {
           invoker = el._vei[name] = (e) => {
+            // 修复事件冒泡问题，屏蔽所有绑定事件晚于事件触发时间的事件执行
+            if (e.timestamp < invoker.attached) return;
             if (Array.isArray(invoker.value)) {
               invoker.value.forEach((fn) => fn(e));
             } else {
@@ -100,6 +101,7 @@ const { renderer } = createRenderer({
           };
           invoker.value = nextValue;
           el.addEventListener(name, invoker);
+          invoker.attached = performance.now();
         } else {
           invoker.value = nextValue;
         }
@@ -107,6 +109,8 @@ const { renderer } = createRenderer({
         el.removeEventListener(name, invoker);
       }
     } else if (key === 'class') {
+      // 在设置class的一系列方法里（setAttribute、className、classList）使用className性能最佳。
+      // 可以对class的设置进行特殊处理
       el.className = nextValue || '';
     } else if (shouldSetAsProps(el, key, nextValue)) {
       const type = typeof el[key];
