@@ -12,12 +12,6 @@ function createRenderer(options) {
   }
   function mountElement(vnode, container) {
     const el = (vnode.el = createElement(vnode.type));
-    if (vnode.props) {
-      for (const key in vnode.props) {
-        const value = vnode.props[key];
-        patchProps(el, key, null, value);
-      }
-    }
     if (typeof vnode.children === 'string') {
       setElementText(el, vnode.children);
     } else if (Array.isArray(vnode.children)) {
@@ -26,7 +20,53 @@ function createRenderer(options) {
         patch(null, child, el);
       });
     }
+    if (vnode.props) {
+      for (const key in vnode.props) {
+        const value = vnode.props[key];
+        patchProps(el, key, null, value);
+      }
+    }
     insert(el, container);
+  }
+  function patchChildren(n1, n2, container) {
+    if (typeof n2.children === 'string') {
+      if (Array.isArray(n1.children)) {
+        n1.children.forEach((c) => unmount(c));
+      }
+      setElementText(container, n2.children);
+    } else if (Array.isArray(n2.children)) {
+      if (Array.isArray(n1.children)) {
+        // 新旧都是一组子节点，涉及到diff算法
+        n1.children.forEach((c) => unmount(c));
+        n2.children.forEach((c) => patch(null, c, container));
+      } else {
+        setElementText(container, '');
+        n2.children.forEach((c) => patch(null, c, container));
+      }
+    } else {
+      // 走到这里 说明新子节点不存在，把旧节点卸载即可
+      if (Array.isArray(n1.children)) {
+        n1.children.forEach((c) => unmount(c));
+      } else if (typeof n1.children === 'string') {
+        setElementText(container, '');
+      }
+    }
+  }
+  function patchElement(n1, n2) {
+    const el = (n2.el = n1.el);
+    const oldProps = n1.props;
+    const newProps = n2.props;
+    for (const key in newProps) {
+      if (newProps[key] !== oldProps[key]) {
+        patchProps(el, key, oldProps[key], newProps[key]);
+      }
+      for (const key in oldProps) {
+        if (!(key in newProps)) {
+          patchProps(el, key, oldProps[key], null);
+        }
+      }
+    }
+    patchChildren(n1, n2, el);
   }
   function patch(n1, n2, container) {
     // TODO 在这里编写渲染逻辑
@@ -41,7 +81,7 @@ function createRenderer(options) {
         mountElement(n2, container);
       } else {
         // 如果n1 存在 则意味着打补丁
-        console.log('打补丁');
+        patchElement(n1, n2, container);
       }
     } else if (typeof type === 'object') {
       console.log('处理组件');
@@ -166,6 +206,27 @@ effect(() => {
 setTimeout(() => {
   vnode.value = {
     type: 'h1',
-    children: 'helloworld',
+    props: {
+      id: 'kk',
+      onClick: [
+        () => {
+          console.log('1新补丁点击了');
+        },
+        () => {
+          console.log('2新补丁点击了');
+        },
+      ],
+    },
+    children: [
+      {
+        type: 'button',
+        props: {
+          disabled: false,
+          // 可通过标准化class 处理多种数据结构并归一化为字符串
+          class: 'foo bar',
+        },
+        children: '你好我是button',
+      },
+    ],
   };
 }, 2000);
