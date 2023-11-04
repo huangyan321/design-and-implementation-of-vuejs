@@ -1,6 +1,7 @@
 /** @format */
 
-// 挂载与更新
+// 简单diff算法
+
 const { effect, ref, reactive } = VueReactivity;
 // 文本节点唯一标识
 const Text = Symbol();
@@ -23,7 +24,7 @@ function createRenderer(options) {
     if (key === 'form' && el.tagName === 'INPUT') return false;
     return key in el;
   }
-  function mountElement(vnode, container) {
+  function mountElement(vnode, container, anchor) {
     const el = (vnode.el = createElement(vnode.type));
     if (typeof vnode.children === 'string') {
       setElementText(el, vnode.children);
@@ -39,7 +40,7 @@ function createRenderer(options) {
         patchProps(el, key, null, value);
       }
     }
-    insert(el, container);
+    insert(el, container, anchor);
   }
   function patchChildren(n1, n2, container) {
     if (typeof n2.children === 'string') {
@@ -49,9 +50,56 @@ function createRenderer(options) {
       setElementText(container, n2.children);
     } else if (Array.isArray(n2.children)) {
       if (Array.isArray(n1.children)) {
-        // 新旧都是一组子节点，涉及到diff算法
-        n1.children.forEach((c) => unmount(c));
-        n2.children.forEach((c) => patch(null, c, container));
+        // 简单diff算法实现
+        const oldChildren = n1.children;
+        const newChildren = n2.children;
+        // 定义初始最大索引为0
+        // 在一组旧节点寻找相同key的过程中记录最大索引值lastIndex
+        // ，当后续匹配到的旧节点比lastIndex更小时，说明该节点需要移动
+        let lastIndex = 0;
+        for (let i = 0; i < newChildren.length; i++) {
+          const newVNode = newChildren[i];
+          let j = 0;
+          let find = false;
+          for (j; j < oldChildren.length; j++) {
+            const oldVNode = oldChildren[j];
+            if (newVNode.key === oldVNode.key) {
+              // 在旧节点组中找到相同key的节点
+              find = true;
+              patch(oldVNode, newVNode, container);
+              if (j < lastIndex) {
+                const preVNode = newChildren[i - 1];
+                if (preVNode) {
+                  const anchor = preVNode.el.nextSibling;
+                  insert(newVNode.el, container, anchor);
+                }
+              } else {
+                lastIndex = j;
+              }
+              break;
+            }
+          }
+          // 如果找遍了还是没找到匹配的，说明该newVNode是新增节点
+          if (!find) {
+            const preVNode = newChildren[i - 1];
+            let anchor;
+            if (preVNode) {
+              anchor = preVNode.el.nextSibling;
+            } else {
+              anchor = container.firstChild;
+            }
+            patch(null, newVNode, container, anchor);
+          }
+        }
+
+        // 更新完后，遍历旧节点组，移除在新节点组里找不到的节点
+        for (let i = 0; i < oldChildren.length; i++) {
+          const oldVNode = oldChildren[i];
+          const has = newChildren.find((vnode) => vnode.key === oldVNode.key);
+          if (!has) {
+            unmount(oldVNode);
+          }
+        }
       } else {
         setElementText(container, '');
         n2.children.forEach((c) => patch(null, c, container));
@@ -81,7 +129,7 @@ function createRenderer(options) {
     }
     patchChildren(n1, n2, el);
   }
-  function patch(n1, n2, container) {
+  function patch(n1, n2, container, anchor) {
     // TODO 在这里编写渲染逻辑
     if (n1 && n1.type !== n2.type) {
       unmount(n1);
@@ -91,7 +139,7 @@ function createRenderer(options) {
     if (typeof type === 'string') {
       // 如果n1不存在 意味着挂载
       if (!n1) {
-        mountElement(n2, container);
+        mountElement(n2, container, anchor);
       } else {
         // 如果n1 存在 则意味着打补丁
         patchElement(n1, n2, container);
@@ -227,40 +275,23 @@ const vnode = ref({
   type: 'h1',
   props: {
     id: 'kk',
-    onClick: [
-      () => {
-        console.log('1点击了');
-      },
-      () => {
-        console.log('2点击了');
-      },
-    ],
   },
+  key: 1,
   children: [
     {
       type: 'p',
+      key: 2,
+      children: '你好我是p2',
+    },
+    {
+      type: 'p',
+      key: 1,
       children: '你好我是p1',
     },
     {
       type: 'p',
-      children: '你好我是p2',
-    },
-    {
-      type: 'button',
-      props: {
-        disabled: '',
-        // 可通过标准化class 处理多种数据结构并归一化为字符串
-        class: 'foo bar',
-      },
-      children: '你好我是button',
-    },
-    {
-      type: Text,
-      children: '你好我是文本节点',
-    },
-    {
-      type: Comment,
-      children: '你好我是p2注释',
+      key: 3,
+      children: '你好我是p3',
     },
   ],
 });
@@ -273,38 +304,19 @@ setTimeout(() => {
     type: 'h1',
     props: {
       id: 'kk',
-      onClick: [
-        () => {
-          console.log('1新补丁点击了');
-        },
-        () => {
-          console.log('2新补丁点击了');
-        },
-      ],
     },
+    key: 1,
     children: [
       {
         type: 'p',
+        key: 1,
         children: '你好我是p1',
       },
       {
         type: 'p',
+        key: 2,
         children: '你好我是p2',
-      },
-
-      {
-        type: 'button',
-        props: {
-          disabled: false,
-          // 可通过标准化class 处理多种数据结构并归一化为字符串
-          class: 'foo bar a',
-        },
-        children: '你好我是button',
-      },
-      {
-        type: Text,
-        children: '你好我是更新后的文本节点',
       },
     ],
   };
-}, 2000);
+}, 1000);
