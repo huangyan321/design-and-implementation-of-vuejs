@@ -56,6 +56,70 @@ function createRenderer(options) {
     let newStartVNode = newChildren[newStartIdx];
     let newEndVNode = newChildren[newEndIdx];
 
+    while (oldStartIdx <= oldEndIdx && newStartIdx <= newEndIdx) {
+      if (!oldStartVNode) {
+        oldStartVNode = oldChildren[++oldStartIdx];
+      } else if (!oldEndVNode) {
+        oldEndVNode = oldChildren[--oldEndIdx];
+      } else if (oldStartVNode.key === newStartVNode.key) {
+        // 第一步 头头比较
+        patch(oldStartVNode, newStartVNode, container);
+        // 新旧都在头部，不移动dom，只更新索引
+        oldStartVNode = oldChildren[++oldStartIdx];
+        newStartVNode = newChildren[++newStartIdx];
+      } else if (oldEndVNode.key === newEndVNode.key) {
+        // 第二部 尾尾比较
+        patch(oldEndVNode, newEndVNode, container);
+        // 新旧都在尾部，不移动dom，只更新索引
+        oldEndVNode = oldChildren[--oldEndIdx];
+        newEndVNode = newChildren[--newEndIdx];
+      } else if (oldStartVNode.key === newEndVNode.key) {
+        // 第三步 尾头比较
+        patch(oldStartVNode, newEndVNode, container);
+        insert(oldStartVNode.el, container, oldEndVNode.el.nextSibling);
+        oldStartVNode = oldChildren[++oldStartIdx];
+        newEndVNode = newChildren[--newEndIdx];
+      } else if (oldEndVNode.key === newStartVNode.key) {
+        // 第四步 头尾比较
+        patch(oldEndVNode, newStartVNode, container);
+        // 移动时，将旧节点组的尾节点移动到头节点
+        insert(oldEndVNode.el, container, oldStartVNode.el);
+        // 移动完成后，更新索引值，并将指针指向下一个位置
+        oldEndVNode = oldChildren[--oldEndIdx];
+        newStartVNode = newChildren[++newStartIdx];
+      } else {
+        const idxInOld = oldChildren.findIndex(
+          (c) => c && c.key === newStartVNode.key
+        );
+        console.log(oldChildren);
+        if (idxInOld > 0) {
+          const vnodeToMove = oldChildren[idxInOld];
+          patch(vnodeToMove, newStartVNode, container);
+          insert(vnodeToMove.el, container, oldStartVNode.el);
+          // 由于原来位置的节点被移走了，因此将其设置为undefined
+          oldChildren[idxInOld] = void 0;
+        } else {
+          patch(null, newStartVNode, container, oldStartVNode.el);
+        }
+        newStartVNode = newChildren[++newStartIdx];
+      }
+    }
+
+    // 添加新节点
+    if (oldEndIdx < oldStartIdx && newStartIdx <= newEndIdx) {
+      for (let i = newStartIdx; i <= newEndIdx; i++) {
+        // 找到现有的头部节点索引(newEndIdx + 1)
+        const anchor = newChildren[newEndIdx + 1]
+          ? newChildren[newEndIdx + 1].el
+          : null;
+        patch(null, newChildren[i], container, anchor);
+      }
+    } else if (newEndIdx < newStartIdx && oldStartIdx <= oldEndIdx) {
+      // 删除旧节点
+      for (let i = oldStartIdx; i <= oldEndIdx; i++) {
+        unmount(oldChildren[i]);
+      }
+    }
   }
   function patchChildren(n1, n2, container) {
     if (typeof n2.children === 'string') {
@@ -73,7 +137,7 @@ function createRenderer(options) {
       }
     } else {
       // 走到这里 说明新子节点不存在，把旧节点卸载即可
-      
+
       if (Array.isArray(n1.children)) {
         n1.children.forEach((c) => unmount(c));
       } else if (typeof n1.children === 'string') {
@@ -171,12 +235,15 @@ function createRenderer(options) {
 // 创建渲染器，可传入自定义操作api，提供跨平台能力
 const { renderer } = createRenderer({
   createElement(tag) {
+    console.log('createElement');
     return document.createElement(tag);
   },
   setElementText(el, text) {
+    console.log('setElementText');
     el.textContent = text;
   },
   insert(el, parent, anchor = null) {
+    console.log('insert');
     parent.insertBefore(el, anchor);
   },
   patchProps(el, key, preValue, nextValue) {
@@ -248,18 +315,23 @@ const vnode = ref({
   children: [
     {
       type: 'p',
-      key: 2,
-      children: '你好我是p2',
-    },
-    {
-      type: 'p',
       key: 1,
       children: '你好我是p1',
     },
     {
       type: 'p',
+      key: 2,
+      children: '你好我是p2',
+    },
+    {
+      type: 'p',
       key: 3,
       children: '你好我是p3',
+    },
+    {
+      type: 'p',
+      key: 4,
+      children: '你好我是p4',
     },
   ],
 });
@@ -277,13 +349,28 @@ setTimeout(() => {
     children: [
       {
         type: 'p',
+        key: 2,
+        children: '你好我是p2',
+      },
+      {
+        type: 'p',
+        key: 4,
+        children: '你好我是p4',
+      },
+      {
+        type: 'p',
         key: 1,
         children: '你好我是p1',
       },
       {
         type: 'p',
-        key: 2,
-        children: '你好我是p2',
+        key: 3,
+        children: '你好我是p3',
+      },
+      {
+        type: 'p',
+        key: 5,
+        children: '你好我是p5',
       },
     ],
   };
