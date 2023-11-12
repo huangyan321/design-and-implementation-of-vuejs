@@ -9,6 +9,23 @@ const Text = Symbol();
 const Comment = Symbol();
 // Fragment节点唯一标识
 const Fragment = Symbol();
+// 缓冲队列
+const queue = new Set();
+let isFlushing = false;
+const p = Promise.resolve();
+function queueJob(job) {
+  queue.add(job.fn);
+  if (isFlushing) return;
+  isFlushing = false;
+  p.then(() => {
+    try {
+      queue.forEach((job) => job());
+    } finally {
+      isFlushing = false;
+      queue.clear();
+    }
+  });
+}
 // 寻找一个数组中的最长递增子序列（取自vue3）
 function getSequence(arr) {
   const p = arr.slice();
@@ -83,6 +100,68 @@ function createRenderer(options) {
     }
     insert(el, container, anchor);
   }
+  function patchElement(n1, n2) {
+    const el = (n2.el = n1.el);
+    const oldProps = n1.props;
+    const newProps = n2.props;
+    for (const key in newProps) {
+      if (newProps[key] !== oldProps[key]) {
+        patchProps(el, key, oldProps[key], newProps[key]);
+      }
+      for (const key in oldProps) {
+        if (!(key in newProps)) {
+          patchProps(el, key, oldProps[key], null);
+        }
+      }
+    }
+    patchChildren(n1, n2, el);
+  }
+  function mountComponent(vnode, container, anchor) {
+    const componentOptions = vnode.type;
+    const {
+      render,
+      data,
+      beforeCreate,
+      created,
+      beforeMount,
+      mounted,
+      beforeUpdate,
+      updated,
+    } = componentOptions;
+    // 此时状态还未处理
+    beforeCreate && beforeCreate();
+    const state = reactive(data());
+    // 维护一个组件实例
+    const instance = {
+      state,
+      isMounted: false,
+      subtree: null,
+    };
+    vnode.component = instance;
+    created && created.call(state, state);
+    effect(
+      () => {
+        const subtree = render.call(state, state);
+        if (!instance.isMounted) {
+          beforeMount && beforeMount.call(state, state);
+          patch(null, subtree, container, anchor);
+          instance.isMounted = true;
+          mounted && mounted.call(state, state);
+        } else {
+          beforeUpdate && beforeUpdate.call(state, state);
+          patch(instance.subtree, subtree, container, anchor);
+          updated && updated().call(state, state);
+        }
+        instance.subtree = subtree;
+      },
+      {
+        scheduler: function () {
+          queueJob(this);
+        },
+      }
+    );
+  }
+  function patchComponent(n1, n2, anchor) {}
   function patchKeyedChildren(n1, n2, container) {
     const oldChildren = n1.children;
     const newChildren = n2.children;
@@ -225,22 +304,6 @@ function createRenderer(options) {
       }
     }
   }
-  function patchElement(n1, n2) {
-    const el = (n2.el = n1.el);
-    const oldProps = n1.props;
-    const newProps = n2.props;
-    for (const key in newProps) {
-      if (newProps[key] !== oldProps[key]) {
-        patchProps(el, key, oldProps[key], newProps[key]);
-      }
-      for (const key in oldProps) {
-        if (!(key in newProps)) {
-          patchProps(el, key, oldProps[key], null);
-        }
-      }
-    }
-    patchChildren(n1, n2, el);
-  }
   function patch(n1, n2, container, anchor) {
     // TODO 在这里编写渲染逻辑
     if (n1 && n1.type !== n2.type) {
@@ -286,7 +349,11 @@ function createRenderer(options) {
         patchChildren(n1, n2, container);
       }
     } else if (typeof type === 'object') {
-      console.log('处理组件');
+      if (!n1) {
+        mountComponent(n2, container, anchor);
+      } else {
+        patchComponent(n1, n2, anchor);
+      }
     } else if (type === 'xxx') {
       console.log('处理其他类型');
     }
@@ -391,103 +458,54 @@ const vnode = ref({
   key: 1,
   children: [
     {
-      type: 'p',
-      key: 1,
-      children: '你好我是p1',
-    },
-    {
-      type: 'p',
-      key: 2,
-      children: '你好我是p2',
-    },
-    {
-      type: 'p',
-      key: 3,
-      children: '你好我是p3',
-    },
-    {
-      type: 'p',
-      key: 4,
-      children: '你好我是p4',
-    },
-    {
-      type: 'p',
-      key: 5,
-      children: '你好我是p5',
-    },
-    {
-      type: 'p',
-      key: 6,
-      children: '你好我是p6',
-    },
-    {
-      type: 'p',
-      key: 7,
-      children: '你好我是p7',
+      type: {
+        created() {
+          setTimeout(() => {
+            this.foo = 'bar';
+          }, 1000);
+          console.log('created');
+        },
+        data() {
+          return {
+            foo: 'hello world',
+          };
+        },
+        render() {
+          return {
+            type: 'div',
+            children: `foo的值是${this.foo}`,
+          };
+        },
+      },
     },
   ],
 });
 effect(() => {
   renderer(vnode.value, document.getElementById('app'));
 });
-setTimeout(() => {
-  vnode.value = {
-    type: 'h1',
-    props: {
-      id: 'kk',
-    },
-    key: 1,
-    children: [
-      {
-        type: 'p',
-        key: 2,
-        children: '你好我是p2',
-      },
-      {
-        type: 'p',
-        key: 4,
-        children: '你好我是p4',
-      },
-      {
-        type: 'p',
-        key: 10,
-        children: '你好我是p10',
-      },
-      {
-        type: 'p',
-        key: 9,
-        children: '你好我是p9',
-      },
-      {
-        type: 'p',
-        key: 1,
-        children: '你好我是p1',
-      },
-      {
-        type: 'p',
-        key: 3,
-        children: '你好我是p3',
-      },
-      {
-        type: 'p',
-        key: 5,
-        children: '你好我是p5',
-      },
-      {
-        type: 'p',
-        key: 6,
-        children: '你好我是p6',
-      },
-      {
-        type: 'p',
-        key: 7,
-        children: '你好我是p7',
-      },
-      {
-        type: 'p',
-        key: 8,
-        children: '你好我是p8',
-      },
-    ],
-  };
-}, 1000);
+// setTimeout(() => {
+//   vnode.value = {
+//     type: 'h1',
+//     props: {
+//       id: 'kk',
+//     },
+//     key: 1,
+//     children: [
+//       {
+//         type: {
+//           data() {
+//             return {
+//               foo: 'hello world1',
+//             };
+//           },
+//           render() {
+//             return {
+//               type: 'div',
+//               children: `foo的值是${this.foo}`,
+//             };
+//           },
+//         },
+//       },
+//     ],
+//   };
+// }, 1000);
