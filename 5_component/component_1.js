@@ -2,7 +2,7 @@
 
 // 快速diff算法
 
-const { effect, ref, reactive } = VueReactivity;
+const { effect, ref, reactive, shallowReactive } = VueReactivity;
 // 文本节点唯一标识
 const Text = Symbol();
 // 注释节点唯一标识
@@ -127,30 +127,55 @@ function createRenderer(options) {
       mounted,
       beforeUpdate,
       updated,
+      props: propsOptions,
     } = componentOptions;
     // 此时状态还未处理
     beforeCreate && beforeCreate();
     const state = reactive(data());
+    const [props, attrs] = resolveProps(propsOptions, vnode.props);
     // 维护一个组件实例
     const instance = {
       state,
+      props: shallowReactive(props),
       isMounted: false,
       subtree: null,
     };
     vnode.component = instance;
-    created && created.call(state, state);
+    const renderContext = new Proxy(instance, {
+      get(t, k, r) {
+        const { state, props } = t;
+        if (state && k in state) {
+          return Reflect.get(state, k, r);
+        } else if (props && k in props) {
+          return Reflect.get(props, k, r);
+        } else {
+          console.error(`Property ${k} is not defined!`);
+        }
+      },
+      set(t, k, v, r) {
+        const { state, props } = t;
+        if (state && k in state) {
+          return Reflect.set(state, k, v);
+        } else if (props && k in props) {
+          return console.warn(`props ${k} is readonly!`);
+        } else {
+          console.error(`Property ${k} is not defined!`);
+        }
+      },
+    });
+    created && created.call(renderContext, state);
     effect(
       () => {
-        const subtree = render.call(state, state);
+        const subtree = render.call(renderContext, state);
         if (!instance.isMounted) {
-          beforeMount && beforeMount.call(state, state);
+          beforeMount && beforeMount.call(renderContext, state);
           patch(null, subtree, container, anchor);
           instance.isMounted = true;
-          mounted && mounted.call(state, state);
+          mounted && mounted.call(renderContext, state);
         } else {
-          beforeUpdate && beforeUpdate.call(state, state);
+          beforeUpdate && beforeUpdate.call(renderContext, state);
           patch(instance.subtree, subtree, container, anchor);
-          updated && updated().call(state, state);
+          updated && updated().call(renderContext, state);
         }
         instance.subtree = subtree;
       },
@@ -161,7 +186,41 @@ function createRenderer(options) {
       }
     );
   }
-  function patchComponent(n1, n2, anchor) {}
+  function resolveProps(options, propsData) {
+    const props = {};
+    const attrs = {};
+    for (const key in propsData) {
+      if (key in options) {
+        props[key] = propsData[key];
+      } else {
+        attrs[key] = propsData[key];
+      }
+    }
+    return [props, attrs];
+  }
+  function patchComponent(n1, n2, anchor) {
+    const instance = (n2.component = n1.component);
+    const props = instance;
+    if (hasPropsChanged(n1.props, n2.props)) {
+      const [nextProps] = resolveProps(n2.type.props, n2.props);
+      for (const k in nextProps) {
+        props[k] = nextProps[k];
+      }
+      for (const k in n1.props) {
+        if (!(k in nextProps)) {
+          delete props[k];
+        }
+      }
+    }
+  }
+  function hasPropsChanged(preProps, nextProps) {
+    const nextKeys = Object.keys(nextProps);
+    if (nextKeys.length !== Object.keys(preProps).length) return true;
+    for (const key in nextProps) {
+      if (nextProps[key] !== preProps[key]) return true;
+    }
+    return false;
+  }
   function patchKeyedChildren(n1, n2, container) {
     const oldChildren = n1.children;
     const newChildren = n2.children;
@@ -352,6 +411,7 @@ function createRenderer(options) {
       if (!n1) {
         mountComponent(n2, container, anchor);
       } else {
+        console.log('patchComponent');
         patchComponent(n1, n2, anchor);
       }
     } else if (type === 'xxx') {
@@ -458,10 +518,19 @@ const vnode = ref({
   key: 1,
   children: [
     {
+      props: {
+        title: 'this is a title',
+        class: 'title',
+        id: '123123',
+      },
+      key: '11',
       type: {
+        props: {
+          title: String,
+        },
         created() {
           setTimeout(() => {
-            this.foo = 'bar';
+            this.title = 'bar';
           }, 1000);
           console.log('created');
         },
@@ -473,6 +542,7 @@ const vnode = ref({
         render() {
           return {
             type: 'div',
+            key: '11',
             children: `foo的值是${this.foo}`,
           };
         },
@@ -483,29 +553,3 @@ const vnode = ref({
 effect(() => {
   renderer(vnode.value, document.getElementById('app'));
 });
-// setTimeout(() => {
-//   vnode.value = {
-//     type: 'h1',
-//     props: {
-//       id: 'kk',
-//     },
-//     key: 1,
-//     children: [
-//       {
-//         type: {
-//           data() {
-//             return {
-//               foo: 'hello world1',
-//             };
-//           },
-//           render() {
-//             return {
-//               type: 'div',
-//               children: `foo的值是${this.foo}`,
-//             };
-//           },
-//         },
-//       },
-//     ],
-//   };
-// }, 1000);
