@@ -1,6 +1,6 @@
 /** @format */
 
-// 组件实现原理
+// 组件事件实现原理
 
 const { effect, ref, reactive, shallowReactive } = VueReactivity;
 // 文本节点唯一标识
@@ -118,8 +118,9 @@ function createRenderer(options) {
   }
   function mountComponent(vnode, container, anchor) {
     const componentOptions = vnode.type;
-    const {
+    let {
       render,
+      setup,
       data,
       beforeCreate,
       created,
@@ -131,7 +132,8 @@ function createRenderer(options) {
     } = componentOptions;
     // 此时状态还未处理
     beforeCreate && beforeCreate();
-    const state = reactive(data());
+    const state = data ? reactive(data()) : null;
+
     const [props, attrs] = resolveProps(propsOptions, vnode.props);
     // 维护一个组件实例
     const instance = {
@@ -140,6 +142,25 @@ function createRenderer(options) {
       isMounted: false,
       subtree: null,
     };
+    function emit(event, ...payload) {
+      const eventName = `on${event[0].toUpperCase() + event.slice(1)}`;
+      const handler = instance.props[eventName];
+      if (handler) {
+        handler(...payload);
+      } else {
+        console.error(`Event ${eventName} is not defined!`);
+      }
+    }
+    const setupContext = { attrs, emit };
+    const setupResult = setup ? setup(props, setupContext) : null;
+    let setupState = null;
+    if (typeof setupResult === 'function') {
+      if (render) console.error('setup 函数返回渲染函数，render选项将被忽略');
+      render = setupResult;
+    } else {
+      setupState = setupResult;
+    }
+
     vnode.component = instance;
     const renderContext = new Proxy(instance, {
       get(t, k, r) {
@@ -148,6 +169,8 @@ function createRenderer(options) {
           return Reflect.get(state, k, r);
         } else if (props && k in props) {
           return Reflect.get(props, k, r);
+        } else if (setupState && k in setupState) {
+          return Reflect.get(setupState, k, r);
         } else {
           console.error(`Property ${k} is not defined!`);
         }
@@ -158,8 +181,10 @@ function createRenderer(options) {
           return Reflect.set(state, k, v);
         } else if (props && k in props) {
           return console.warn(`props ${k} is readonly!`);
+        } else if (setupState && k in setupState) {
+          return Reflect.set(setupState, k, v);
         } else {
-          console.error(`Property ${k} is not defined!`);
+          console.error(`属性 ${k} 不存在`);
         }
       },
     });
@@ -190,7 +215,8 @@ function createRenderer(options) {
     const props = {};
     const attrs = {};
     for (const key in propsData) {
-      if (key in options) {
+      // 任何以on开头的属性都是事件，都将其加入到props中
+      if (key in options || key.startsWith('on')) {
         props[key] = propsData[key];
       } else {
         attrs[key] = propsData[key];
@@ -522,16 +548,31 @@ const vnode = ref({
         title: 'this is a title',
         class: 'title',
         id: '123123',
+        onChange(payload) {
+          console.log('onChange has been called,payload: ' + payload);
+        },
       },
       key: '11',
       type: {
+        setup(props, { attrs, emit }) {
+          console.log(props);
+          console.log(attrs);
+          setTimeout(() => {
+            emit('change', 'hello world');
+          });
+          return function () {
+            return {
+              type: 'div',
+              key: '11',
+              children: `foo的值是${this.foo}`,
+            };
+          };
+        },
         props: {
           title: String,
         },
         created() {
-          setTimeout(() => {
-            this.title = 'bar';
-          }, 1000);
+          // console.log(this.setupFoo);
           console.log('created');
         },
         data() {
